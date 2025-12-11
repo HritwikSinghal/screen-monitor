@@ -75,7 +75,7 @@ pyenv local 3.11.7
 
 7. Set up the virtual environment and install dependencies:
 ```bash
-pipenv install
+pipenv install --python 3.11.11
 ```
 
 8. Copy the main script (from the previous artifact) into a file named `screen_monitor.py`
