@@ -4,8 +4,12 @@ import traceback
 import cv2
 import numpy as np
 import pyscreenshot
+import logging
 
 from src.volume import VolumeController
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def capture_screen():
@@ -37,7 +41,7 @@ def check_image_presence(screen, target_img, threshold=0.8):
     return np.max(result) >= threshold
 
 
-def main():
+def start():
     # Initialize volume control
     try:
         volume_control = VolumeController()

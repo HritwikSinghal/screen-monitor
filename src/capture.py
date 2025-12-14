@@ -11,6 +11,7 @@ import re
 from gi.repository import GLib
 from dbus.mainloop.glib import DBusGMainLoop
 
+
 class PortalBus:
     def __init__(self):
         DBusGMainLoop(set_as_default=True)
@@ -22,7 +23,7 @@ class PortalBus:
         return re.sub('\.', '_', self.bus.get_unique_name()).lstrip(':')
 
     def request_handle(self, token):
-        return '/org/freedesktop/portal/desktop/request/%s/%s'%(self.sender_name(), token)
+        return '/org/freedesktop/portal/desktop/request/%s/%s' % (self.sender_name(), token)
 
 class PortalScreenshot:
     def __init__(self, portal_bus):
@@ -30,35 +31,43 @@ class PortalScreenshot:
         self.bus = portal_bus.bus
         self.portal = portal_bus.portal
 
-    def request(self, callback, parent_window = ''):
+    def request(self, callback, parent_window=''):
         request_token = self.new_unique_token()
-        options = { 'handle_token': request_token }
+        options = {'handle_token': request_token}
 
         self.bus.add_signal_receiver(callback,
-                                    'Response',
-                                    'org.freedesktop.portal.Request',
-                                    'org.freedesktop.portal.Desktop',
-                                    self.portal_bus.request_handle(request_token))
+                                     'Response',
+                                     'org.freedesktop.portal.Request',
+                                     'org.freedesktop.portal.Desktop',
+                                     self.portal_bus.request_handle(request_token))
 
         self.portal.Screenshot(parent_window, options, dbus_interface='org.freedesktop.portal.Screenshot')
 
     @staticmethod
     def new_unique_token():
-        return 'screen_shot_py_%s'%secrets.token_hex(16)
+        return 'screen_shot_py_%s' % secrets.token_hex(16)
 
-def callback(response, result):
-    if response == 0:
-        print(result['uri'])
-    else:
-        print("Failed to screenshot: %d"%response)
 
-    loop.quit()
+class Capture:
+    def __init__(self):
+        self.loop = GLib.MainLoop()
+        self.bus = PortalBus()
 
-loop = GLib.MainLoop()
-bus = PortalBus()
-PortalScreenshot(bus).request(callback)
+    def callback(self, response, result):
+        if response == 0:
+            print(result['uri'])
+        else:
+            print("Failed to screenshot: %d" % response)
 
-try:
-    loop.run()
-except KeyboardInterrupt:
-    loop.quit()
+        self.loop.quit()
+
+    def capture(self):
+        PortalScreenshot(self.bus).request(self.callback)
+
+        try:
+            self.loop.run()
+        except KeyboardInterrupt:
+            self.loop.quit()
+
+    def start(self):
+        self.capture()
