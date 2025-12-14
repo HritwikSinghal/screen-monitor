@@ -1,6 +1,69 @@
+# Screen Monitor
+
+- [Screen Monitor](#screen-monitor)
+  - [What](#what)
+  - [Why](#why)
+  - [Who](#who)
+  - [How](#how)
+  - [Where](#where)
+  - [When](#when)
+  - [Claude stuff](#claude-stuff)
+
+## What
+
+is this?
+
+```python
+while True:
+    # Capture SS of your screen
+    # if a condition is met:
+    #       runs an action
+    # sleep(<time_period>)
+    pass
+```
+
+## Why
+
+is this?
+
+To automatically mute my system volume when in-stream ads start on J\*oShitstar while watching some cricket match. (and unmute again ofc...).
+
+## Who
+
+is this for?
+
+People who hate ads `(⌐⊙_⊙)`.
+
+## How
+
+to run this?
+
+- install `uv`
+- `uv run main.py`
+
+## Where
+
+to run this?
+
+Currently tested on GNOME 49 on arch linux with `xdg-desktop-portal-gnome` installed.
+
+The initial commit was tested on MacOS (i know, i know ).
+
+## When
+
+to run this?
+
+Do you really want me to answer that for you? `(-_-)`.
+
+## Claude stuff
+
+Yeah this project was started as vibe-coded script from claude, but any commits made after the initial one are NOT VIBE-CODED; and won't be ever!
+
+Look, i was lazy (and high) and wanted to NOT watch in-stream ads; but also didn't want to manually do mute/unmute every 2mins.
+
+---
+
 I'll help you set up a proper Python environment with all dependencies using pipenv.
-
-
 
 ```python
 # Pipfile
@@ -30,16 +93,19 @@ Here are the step-by-step instructions to set up and run the project:
 1. First, install pyenv if you haven't already:
 
 For macOS:
+
 ```bash
 brew install pyenv
 ```
 
 For Linux:
+
 ```bash
 curl https://pyenv.run | bash
 ```
 
 For Windows:
+
 ```bash
 # Using PowerShell (run as Administrator)
 Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1" -OutFile "./install-pyenv-win.ps1"; &"./install-pyenv-win.ps1"
@@ -48,6 +114,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pyenv
 2. Add pyenv to your shell:
 
 For bash/zsh (add to ~/.bashrc or ~/.zshrc):
+
 ```bash
 export PYENV_ROOT="$HOME/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
@@ -55,11 +122,13 @@ eval "$(pyenv init -)"
 ```
 
 3. Install pipenv:
+
 ```bash
 pip install --user pipenv
 ```
 
 4. Create a new directory for your project and navigate to it:
+
 ```bash
 mkdir screen-monitor
 cd screen-monitor
@@ -68,12 +137,14 @@ cd screen-monitor
 5. Create the Pipfile and .python-version files as shown in the artifact above (copy and paste them).
 
 6. Install Python 3.10.13 using pyenv:
+
 ```bash
 pyenv install 3.11.7
 pyenv local 3.11.7
 ```
 
 7. Set up the virtual environment and install dependencies:
+
 ```bash
 pipenv install --python 3.11.11
 ```
@@ -83,6 +154,7 @@ pipenv install --python 3.11.11
 9. Place your target image as `target_image.png` in the same directory
 
 10. Run the script:
+
 ```bash
 pipenv run python screen_monitor.py
 ```
@@ -90,6 +162,7 @@ pipenv run python screen_monitor.py
 Additional platform-specific requirements:
 
 For Linux:
+
 ```bash
 # For Ubuntu/Debian
 sudo apt-get update
@@ -101,22 +174,27 @@ sudo apt-get install alsa-utils
 ```
 
 For macOS:
+
 ```bash
 brew install python-tk
 ```
 
 For Windows:
+
 ```bash
 # No additional system dependencies required
 ```
 
 Troubleshooting tips:
+
 1. If you get a permissions error when taking screenshots:
+
    - macOS: Give screen recording permissions to your terminal app
    - Linux: Make sure you have `scrot` installed
    - Windows: Run as administrator if needed
 
 2. If you get audio control errors:
+
    - Linux: Make sure either PulseAudio or ALSA is installed
    - macOS: Make sure your terminal has accessibility permissions
    - Windows: Make sure you're running with adequate permissions
