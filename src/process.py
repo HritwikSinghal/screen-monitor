@@ -7,17 +7,23 @@ import pyscreenshot
 import logging
 
 from src.volume import VolumeController
+from src.capture import Capture
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
-def capture_screen():
+def capture_screen(client):
     """Capture the screen and return as numpy array"""
     print("Capturing screen")
     try:
         # pyautogui cannot take SS in wayland.
         # screenshot = pyautogui.screenshot()
+
+        # logger.debug("Starting xdg")
+        # # screenshot = client.start()
+        # client.start()
+
         screenshot = pyscreenshot.grab()
         return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
     except:
@@ -61,10 +67,11 @@ def start():
     print("Monitoring started. Press Ctrl+C to stop.")
     was_muted = False
 
+    client = Capture()
     try:
         while True:
             # Capture screen
-            screen = capture_screen()
+            screen = capture_screen(client)
 
             # Check for image presence
             image_present = check_image_presence(screen, target_img)
