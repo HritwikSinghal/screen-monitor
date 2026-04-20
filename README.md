@@ -32,7 +32,7 @@ To automatically mute my system volume when in-stream ads start on J\*oShitstar 
 
 is this for?
 
-People who hate ads `(⌐⊙_⊙)`.
+People who hate ads `(-_-)`.
 
 ## How
 
@@ -59,17 +59,36 @@ Do you really want me to answer that for you? `(-_-)`.
 
 Additional platform-specific requirements:
 
-For Linux:
+For Linux (GNOME Wayland, zero-blink capture):
+
+Screen capture uses the `org.freedesktop.portal.ScreenCast` portal + a
+persistent PipeWire stream, so there is no per-frame compositor flash. On
+first launch you will see a GNOME picker dialog once; after you pick a monitor
+or window, the `restore_token` is cached at
+`~/.local/share/screen-monitor/portal.json` and subsequent runs start silently.
+
+Audio uses `pactl` against PipeWire's PulseAudio compatibility layer
+(`pipewire-pulse`). If your distro still ships a standalone PulseAudio daemon,
+`pactl` will continue to work and no extra changes are required.
 
 ```bash
-# For Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install python3-tk python3-dev scrot
-# Install either PulseAudio or ALSA
-sudo apt-get install pulseaudio
-# or
-sudo apt-get install alsa-utils
+# Arch
+sudo pacman -S pipewire pipewire-pulse \
+    xdg-desktop-portal xdg-desktop-portal-gnome \
+    gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire
 ```
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install pipewire pipewire-pulse \
+    xdg-desktop-portal xdg-desktop-portal-gnome \
+    gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-pipewire
+```
+
+To revoke the cached permission, visit GNOME Settings -> Privacy -> Screen
+Sharing, or simply delete `~/.local/share/screen-monitor/portal.json`.
 
 For macOS:
 
