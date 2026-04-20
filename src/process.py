@@ -15,7 +15,7 @@ POLL_INTERVAL_SEC = 0.1
 
 
 def capture_screen(client: Capture) -> np.ndarray | None:
-    """Pull the latest frame from the persistent PipeWire stream (BGR, HxWx3)."""
+    """Pull the latest frame from the persistent PipeWire stream (GRAY8, HxW)."""
     try:
         return client.get_frame()
     except Exception:
@@ -24,7 +24,7 @@ def capture_screen(client: Capture) -> np.ndarray | None:
 
 
 def load_target_image(image_path):
-    target_img = cv2.imread(image_path)
+    target_img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if target_img is None:
         raise ValueError(f"Could not load image from {image_path}")
     return target_img
