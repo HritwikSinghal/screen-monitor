@@ -18,8 +18,9 @@ import gi
 import numpy as np
 
 gi.require_version("Gst", "1.0")
+gi.require_version("GstApp", "1.0")
 from dbus.mainloop.glib import DBusGMainLoop  # noqa: E402
-from gi.repository import GLib, Gst  # noqa: E402
+from gi.repository import GLib, Gst, GstApp  # noqa: E402, F401
 
 logger = logging.getLogger(__name__)
 
@@ -127,16 +128,35 @@ def _run_portal_call(bus: dbus.SessionBus, request_path: str, invoke) -> dict:
         loop.quit()
         return False
 
+    def do_invoke():
+        # Run inside the main loop so a synchronous exception from invoke()
+        # (e.g. portal not on the bus, serialization failure) stops the loop
+        # immediately instead of blocking until the timeout fires.
+        try:
+            invoke()
+        except Exception as e:
+            captured["invoke_error"] = e
+            loop.quit()
+        return False  # one-shot idle callback
+
+    # Resolve the well-known portal name to its unique bus name so the match
+    # rule binds reliably on older dbus-python versions and is not confused
+    # by name-ownership flaps.
+    try:
+        sender_name = bus.get_name_owner(PORTAL_BUS_NAME)
+    except dbus.DBusException:
+        sender_name = PORTAL_BUS_NAME
+
     bus.add_signal_receiver(
         on_response,
         signal_name="Response",
         dbus_interface=REQUEST_IFACE,
-        bus_name=PORTAL_BUS_NAME,
+        bus_name=sender_name,
         path=request_path,
     )
     timeout_id = GLib.timeout_add_seconds(PORTAL_CALL_TIMEOUT_SEC, on_timeout)
+    GLib.idle_add(do_invoke)
     try:
-        invoke()
         loop.run()
     finally:
         GLib.source_remove(timeout_id)
@@ -144,10 +164,12 @@ def _run_portal_call(bus: dbus.SessionBus, request_path: str, invoke) -> dict:
             on_response,
             signal_name="Response",
             dbus_interface=REQUEST_IFACE,
-            bus_name=PORTAL_BUS_NAME,
+            bus_name=sender_name,
             path=request_path,
         )
 
+    if "invoke_error" in captured:
+        raise captured["invoke_error"]
     if captured.get("timeout"):
         raise RuntimeError("Portal call timed out")
     return captured
@@ -174,9 +196,16 @@ class ScreenCastSession:
             if restore_token and e.method == "Start":
                 logger.warning("Cached restore_token rejected (%s); re-prompting.", e)
                 self._token_store.clear()
+                # Release any session/fd opened on the first attempt before
+                # starting a new one, otherwise they leak until process exit.
+                self.close()
                 self._open_with(None)
             else:
+                self.close()
                 raise
+        except Exception:
+            self.close()
+            raise
 
     def _open_with(self, restore_token: str | None) -> None:
         self._create_session()
@@ -203,9 +232,14 @@ class ScreenCastSession:
             self._bus.portal.CreateSession(options, dbus_interface=SCREENCAST_IFACE)
 
         captured = _run_portal_call(self._bus.bus, request_path, invoke)
-        if captured["code"] != 0:
-            raise _PortalCallError("CreateSession", captured["code"])
-        self.session_handle = str(captured["results"]["session_handle"])
+        code = captured.get("code", -1)
+        if code != 0:
+            raise _PortalCallError("CreateSession", code)
+        results = captured.get("results") or {}
+        handle = results.get("session_handle")
+        if handle is None:
+            raise RuntimeError("Portal CreateSession returned no session_handle")
+        self.session_handle = str(handle)
 
     def _select_sources(self, restore_token: str | None) -> None:
         handle_token = _PortalBus.new_token("sm_select")
@@ -229,8 +263,9 @@ class ScreenCastSession:
             )
 
         captured = _run_portal_call(self._bus.bus, request_path, invoke)
-        if captured["code"] != 0:
-            raise _PortalCallError("SelectSources", captured["code"])
+        code = captured.get("code", -1)
+        if code != 0:
+            raise _PortalCallError("SelectSources", code)
 
     def _start(self) -> tuple[list, str | None]:
         handle_token = _PortalBus.new_token("sm_start")
@@ -245,9 +280,10 @@ class ScreenCastSession:
             )
 
         captured = _run_portal_call(self._bus.bus, request_path, invoke)
-        if captured["code"] != 0:
-            raise _PortalCallError("Start", captured["code"])
-        results = captured["results"]
+        code = captured.get("code", -1)
+        if code != 0:
+            raise _PortalCallError("Start", code)
+        results = captured.get("results") or {}
         streams = list(results.get("streams", []))
         if not streams:
             raise RuntimeError("Portal returned no streams")
@@ -264,15 +300,24 @@ class ScreenCastSession:
         return int(fd_obj.take()) if hasattr(fd_obj, "take") else int(fd_obj)
 
     def close(self) -> None:
-        if self.session_handle is None:
-            return
-        try:
-            session_obj = self._bus.bus.get_object(PORTAL_BUS_NAME, self.session_handle)
-            session_obj.Close(dbus_interface="org.freedesktop.portal.Session")
-        except dbus.DBusException as e:
-            logger.debug("Session close ignored: %s", e)
-        finally:
-            self.session_handle = None
+        # The session owns the PipeWire fd it received from OpenPipeWireRemote;
+        # pipewiresrc does not take ownership, so we must close it ourselves
+        # after the pipeline has been torn down.
+        if self.session_handle is not None:
+            try:
+                session_obj = self._bus.bus.get_object(PORTAL_BUS_NAME, self.session_handle)
+                session_obj.Close(dbus_interface="org.freedesktop.portal.Session")
+            except dbus.DBusException as e:
+                logger.warning("Session close failed: %s", e)
+            finally:
+                self.session_handle = None
+        if self.pipewire_fd is not None:
+            try:
+                os.close(self.pipewire_fd)
+            except OSError as e:
+                logger.debug("pipewire fd close ignored: %s", e)
+            finally:
+                self.pipewire_fd = None
 
 
 class PipeWireCapture:
@@ -362,8 +407,14 @@ class Capture:
         session = ScreenCastSession(self.token_store)
         session.open()
         logger.info("Portal session opened: node=%s fd=%s", session.node_id, session.pipewire_fd)
-        stream = PipeWireCapture(session.pipewire_fd, session.node_id)
-        stream.start()
+        try:
+            stream = PipeWireCapture(session.pipewire_fd, session.node_id)
+            stream.start()
+        except Exception:
+            # Release the portal session + fd if the GStreamer pipeline fails
+            # to build; otherwise we leak both until process exit.
+            session.close()
+            raise
         self._session = session
         self._stream = stream
         return self

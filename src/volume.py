@@ -1,6 +1,9 @@
+import logging
 import os
 import platform
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 class VolumeController:
@@ -50,38 +53,37 @@ class VolumeController:
             for path in os.environ["PATH"].split(os.pathsep)
         )
 
-    def mute(self):
-        """Mute system audio"""
+    def _run_checked(self, argv):
         try:
-            if self.system == "darwin":  # macOS
-                subprocess.run(["osascript", "-e", "set volume with output muted"])
+            subprocess.run(argv, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace").strip() if e.stderr else ""
+            raise RuntimeError(
+                f"{argv[0]} failed (exit {e.returncode}): {stderr or '(no stderr)'}"
+            ) from e
+        except FileNotFoundError as e:
+            raise RuntimeError(f"{argv[0]} not found on PATH") from e
 
-            elif self.system == "linux":
-                if self.linux_cmd == "pactl":
-                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"])
-                else:  # amixer
-                    subprocess.run(["amixer", "-q", "set", "Master", "mute"])
-
-            elif self.system == "windows":
-                self.volume_control.SetMute(1, None)
-
-        except Exception as e:
-            print(f"Error while muting: {e}")
+    def mute(self):
+        """Mute system audio. Raises RuntimeError on failure."""
+        if self.system == "darwin":
+            self._run_checked(["osascript", "-e", "set volume with output muted"])
+        elif self.system == "linux":
+            if self.linux_cmd == "pactl":
+                self._run_checked(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"])
+            else:  # amixer
+                self._run_checked(["amixer", "-q", "set", "Master", "mute"])
+        elif self.system == "windows":
+            self.volume_control.SetMute(1, None)
 
     def unmute(self):
-        """Unmute system audio"""
-        try:
-            if self.system == "darwin":  # macOS
-                subprocess.run(["osascript", "-e", "set volume without output muted"])
-
-            elif self.system == "linux":
-                if self.linux_cmd == "pactl":
-                    subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
-                else:  # amixer
-                    subprocess.run(["amixer", "-q", "set", "Master", "unmute"])
-
-            elif self.system == "windows":
-                self.volume_control.SetMute(0, None)
-
-        except Exception as e:
-            print(f"Error while unmuting: {e}")
+        """Unmute system audio. Raises RuntimeError on failure."""
+        if self.system == "darwin":
+            self._run_checked(["osascript", "-e", "set volume without output muted"])
+        elif self.system == "linux":
+            if self.linux_cmd == "pactl":
+                self._run_checked(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
+            else:  # amixer
+                self._run_checked(["amixer", "-q", "set", "Master", "unmute"])
+        elif self.system == "windows":
+            self.volume_control.SetMute(0, None)

@@ -1,6 +1,6 @@
 import logging
+import signal
 import time
-import traceback
 
 import cv2
 import numpy as np
@@ -17,7 +17,7 @@ def capture_screen(client: Capture) -> np.ndarray | None:
     try:
         return client.get_frame()
     except Exception:
-        traceback.print_exc()
+        logger.exception("Frame capture failed")
         return None
 
 
@@ -29,26 +29,46 @@ def load_target_image(image_path):
 
 
 def check_image_presence(screen, target_img, threshold=0.8):
+    if screen is None or target_img is None:
+        return False
+    if screen.ndim != target_img.ndim:
+        return False
+    if screen.ndim == 3 and screen.shape[2] != target_img.shape[2]:
+        return False
+    if target_img.shape[0] > screen.shape[0] or target_img.shape[1] > screen.shape[1]:
+        return False
     result = cv2.matchTemplate(screen, target_img, cv2.TM_CCOEFF_NORMED)
+    if result.size == 0:
+        return False
     return np.max(result) >= threshold
+
+
+def _install_sigterm_handler():
+    # Convert SIGTERM (e.g. systemd stop) into KeyboardInterrupt so the main
+    # loop shuts down through the same path that unmutes and releases the
+    # portal session, instead of being killed mid-frame with audio muted.
+    def _handler(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _handler)
 
 
 def start():
     try:
         volume_control = VolumeController()
     except RuntimeError as e:
-        print(f"Error initializing volume control: {e}")
+        logger.error("Error initializing volume control: %s", e)
         return
 
     try:
-        print("loading target image")
+        logger.info("Loading target image")
         target_img = load_target_image("target_image.png")
-        print("loaded target image")
+        logger.info("Loaded target image")
     except ValueError as e:
-        print(f"Error loading target image: {e}")
+        logger.error("Error loading target image: %s", e)
         return
 
-    print("Monitoring started. Press Ctrl+C to stop.")
+    _install_sigterm_handler()
+    logger.info("Monitoring started. Press Ctrl+C to stop.")
     was_muted = False
 
     with Capture() as client:
@@ -62,19 +82,31 @@ def start():
                 image_present = check_image_presence(screen, target_img)
 
                 if not image_present and not was_muted:
-                    volume_control.mute()
-                    print("Target image not found - Audio muted")
-                    was_muted = True
+                    try:
+                        volume_control.mute()
+                    except Exception:
+                        logger.exception("Mute failed; leaving was_muted=False to retry")
+                    else:
+                        was_muted = True
+                        logger.info("Target image not found - Audio muted")
                 elif image_present and was_muted:
-                    volume_control.unmute()
-                    print("Target image found - Audio unmuted")
-                    was_muted = False
+                    try:
+                        volume_control.unmute()
+                    except Exception:
+                        logger.exception("Unmute failed; will retry next tick")
+                    else:
+                        was_muted = False
+                        logger.info("Target image found - Audio unmuted")
 
                 time.sleep(0.1)
 
         except KeyboardInterrupt:
-            print("\nMonitoring stopped by user")
-            volume_control.unmute()
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            volume_control.unmute()
+            logger.info("Monitoring stopped by user")
+        except Exception:
+            logger.exception("Monitor loop crashed")
+        finally:
+            if was_muted:
+                try:
+                    volume_control.unmute()
+                except Exception:
+                    logger.exception("Failed to unmute on shutdown; audio may remain muted")
