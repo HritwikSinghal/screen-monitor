@@ -41,10 +41,10 @@ PERSIST_UNTIL_REVOKED = 2
 PORTAL_CALL_TIMEOUT_SEC = 180  # user may take time to pick a source on first run
 FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND
 
-# Cap the rate pipewiresrc negotiates with the compositor. The monitor loop
-# consumes frames at ~10 Hz (see process.py); 5 fps leaves headroom while
-# keeping videoconvert/queue work minimal.
-CAPTURE_FRAMERATE = 5
+# Cap the rate pipewiresrc negotiates with the compositor. This also sets the
+# effective detection latency: a state change can only be seen once the next
+# frame arrives. 10 fps = ~100 ms worst case, which matches the poll loop.
+CAPTURE_FRAMERATE = 10
 
 
 class TokenStore:

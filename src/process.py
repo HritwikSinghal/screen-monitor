@@ -11,7 +11,7 @@ from src.volume import VolumeController
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-POLL_INTERVAL_SEC = 0.1
+POLL_INTERVAL_SEC = 0.05
 
 
 def capture_screen(client: Capture) -> np.ndarray | None:
