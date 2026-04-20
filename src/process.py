@@ -15,7 +15,7 @@ POLL_INTERVAL_SEC = 0.1
 
 
 def capture_screen(client: Capture) -> np.ndarray | None:
-    """Pull the latest frame from the persistent PipeWire stream (GRAY8, HxW)."""
+    """Pull the latest frame from the persistent PipeWire stream (BGR, HxWx3)."""
     try:
         return client.get_frame()
     except Exception:
@@ -75,6 +75,11 @@ def start():
                     time.sleep(POLL_INTERVAL_SEC)
                     continue
 
+                # Template matching only uses luminance; convert to grayscale
+                # here (cheap) so matchTemplate runs on 1/3 the data. We keep
+                # the capture pipeline in BGR because some compositor/DMABUF
+                # paths fail to negotiate GRAY8 and the stream stalls.
+                screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
                 image_present = check_image_presence(screen, target_img)
 
                 if not image_present and not was_muted:

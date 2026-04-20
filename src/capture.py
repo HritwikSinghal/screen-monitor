@@ -325,7 +325,7 @@ class ScreenCastSession:
 
 
 class PipeWireCapture:
-    """GStreamer pipeline that consumes the portal's PipeWire node as GRAY8 frames."""
+    """GStreamer pipeline that consumes the portal's PipeWire node as BGR frames."""
 
     _gst_initialized = False
 
@@ -349,7 +349,7 @@ class PipeWireCapture:
             f"! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             f"! videorate drop-only=true max-rate={CAPTURE_FRAMERATE} "
             f"! videoconvert n-threads=0 "
-            f"! video/x-raw,format=GRAY8 "
+            f"! video/x-raw,format=BGR "
             f"! appsink name=sink max-buffers=1 drop=true sync=false emit-signals=false"
         )
         try:
@@ -380,18 +380,20 @@ class PipeWireCapture:
         try:
             # np.frombuffer is a zero-copy view over mapinfo.data; the .copy()
             # below is required because buf.unmap() invalidates that memory.
-            expected = width * height
+            expected = width * height * 3
             size = mapinfo.size
             if size == expected:
                 view = np.frombuffer(
                     mapinfo.data, dtype=np.uint8, count=expected
-                ).reshape(height, width)
+                ).reshape(height, width, 3)
             else:
                 # Row padding: compute stride from total size, then trim.
                 stride = size // height
-                view = np.frombuffer(
-                    mapinfo.data, dtype=np.uint8, count=stride * height
-                ).reshape(height, stride)[:, :width]
+                view = (
+                    np.frombuffer(mapinfo.data, dtype=np.uint8, count=stride * height)
+                    .reshape(height, stride)[:, : width * 3]
+                    .reshape(height, width, 3)
+                )
             return view.copy()
         finally:
             buf.unmap(mapinfo)
