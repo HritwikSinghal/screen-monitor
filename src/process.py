@@ -20,11 +20,11 @@ def capture_screen(client):
         # pyautogui cannot take SS in wayland.
         # screenshot = pyautogui.screenshot()
 
-        # logger.debug("Starting xdg")
-        # # screenshot = client.start()
+        logger.debug("Starting xdg")
+        screenshot = client.start()
         # client.start()
 
-        screenshot = pyscreenshot.grab()
+        # screenshot = pyscreenshot.grab()
         return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
     except:
         traceback.print_exc()

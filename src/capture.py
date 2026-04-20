@@ -18,6 +18,7 @@ class PortalBus:
         DBusGMainLoop(set_as_default=True)
 
         self.bus = dbus.SessionBus()
+        # xdg-desktop-portal works by exposing a series of D-Bus interfaces known as portals under a well-known name (org.freedesktop.portal.Desktop) and object path (/org/freedesktop/portal/desktop).
         self.portal = self.bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')
 
     def sender_name(self):
