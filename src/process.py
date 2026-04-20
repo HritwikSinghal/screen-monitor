@@ -11,6 +11,8 @@ from src.volume import VolumeController
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+POLL_INTERVAL_SEC = 0.1
+
 
 def capture_screen(client: Capture) -> np.ndarray | None:
     """Pull the latest frame from the persistent PipeWire stream (BGR, HxWx3)."""
@@ -43,15 +45,6 @@ def check_image_presence(screen, target_img, threshold=0.8):
     return np.max(result) >= threshold
 
 
-def _install_sigterm_handler():
-    # Convert SIGTERM (e.g. systemd stop) into KeyboardInterrupt so the main
-    # loop shuts down through the same path that unmutes and releases the
-    # portal session, instead of being killed mid-frame with audio muted.
-    def _handler(signum, frame):
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, _handler)
-
-
 def start():
     try:
         volume_control = VolumeController()
@@ -67,7 +60,10 @@ def start():
         logger.error("Error loading target image: %s", e)
         return
 
-    _install_sigterm_handler()
+    # Route SIGTERM (e.g. systemd stop) through the same KeyboardInterrupt path
+    # as Ctrl+C so shutdown unmutes audio and releases the portal session
+    # instead of getting killed mid-frame with audio muted.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     logger.info("Monitoring started. Press Ctrl+C to stop.")
     was_muted = False
 
@@ -76,7 +72,7 @@ def start():
             while True:
                 screen = capture_screen(client)
                 if screen is None:
-                    time.sleep(0.1)
+                    time.sleep(POLL_INTERVAL_SEC)
                     continue
 
                 image_present = check_image_presence(screen, target_img)
@@ -98,7 +94,7 @@ def start():
                         was_muted = False
                         logger.info("Target image found - Audio unmuted")
 
-                time.sleep(0.1)
+                time.sleep(POLL_INTERVAL_SEC)
 
         except KeyboardInterrupt:
             logger.info("Monitoring stopped by user")

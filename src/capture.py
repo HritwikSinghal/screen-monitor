@@ -10,7 +10,6 @@ only prompted to pick a source on first run.
 import json
 import logging
 import os
-import re
 import secrets
 
 import dbus
@@ -40,7 +39,7 @@ CURSOR_EMBEDDED = 2
 PERSIST_UNTIL_REVOKED = 2
 
 PORTAL_CALL_TIMEOUT_SEC = 180  # user may take time to pick a source on first run
-FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND if hasattr(Gst, "SECOND") else 2_000_000_000
+FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND
 
 # Cap the rate pipewiresrc negotiates with the compositor. The monitor loop
 # consumes frames at ~10 Hz (see process.py); 15 leaves a little headroom
@@ -97,7 +96,7 @@ class _PortalBus:
         self.portal = self.bus.get_object(PORTAL_BUS_NAME, PORTAL_OBJECT_PATH)
 
     def sender_name(self) -> str:
-        return re.sub(r"\.", "_", self.bus.get_unique_name()).lstrip(":")
+        return self.bus.get_unique_name().lstrip(":").replace(".", "_")
 
     def request_handle(self, token: str) -> str:
         return f"/org/freedesktop/portal/desktop/request/{self.sender_name()}/{token}"
@@ -349,7 +348,7 @@ class PipeWireCapture:
             f"! video/x-raw,max-framerate={CAPTURE_FRAMERATE}/1 "
             f"! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             f"! videorate drop-only=true max-rate={CAPTURE_FRAMERATE} "
-            f"! videoconvert n-threads=2 "
+            f"! videoconvert n-threads=0 "
             f"! video/x-raw,format=BGR "
             f"! appsink name=sink max-buffers=1 drop=true sync=false emit-signals=false"
         )

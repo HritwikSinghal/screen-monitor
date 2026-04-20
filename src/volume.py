@@ -1,6 +1,6 @@
 import logging
-import os
 import platform
+import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -10,18 +10,16 @@ class VolumeController:
     def __init__(self):
         self.system = platform.system().lower()
 
-        if self.system == "darwin":  # macOS
-            # Check if osascript is available
-            if not self._command_exists("osascript"):
+        if self.system == "darwin":
+            if shutil.which("osascript") is None:
                 raise RuntimeError(
                     "osascript not found. Required for macOS volume control."
                 )
 
         elif self.system == "linux":
-            # Check if pactl or amixer is available
-            if self._command_exists("pactl"):
+            if shutil.which("pactl"):
                 self.linux_cmd = "pactl"
-            elif self._command_exists("amixer"):
+            elif shutil.which("amixer"):
                 self.linux_cmd = "amixer"
             else:
                 raise RuntimeError(
@@ -39,23 +37,18 @@ class VolumeController:
                     IAudioEndpointVolume._iid_, CLSCTX_ALL, None
                 )
                 self.volume_control = cast(interface, POINTER(IAudioEndpointVolume))
-            except ImportError:
+            except ImportError as e:
                 raise RuntimeError(
                     "pycaw not found. Install it using: pip install pycaw"
-                )
+                ) from e
         else:
             raise RuntimeError(f"Unsupported operating system: {self.system}")
 
-    def _command_exists(self, cmd):
-        """Check if a command exists in the system"""
-        return any(
-            os.access(os.path.join(path, cmd), os.X_OK)
-            for path in os.environ["PATH"].split(os.pathsep)
-        )
-
     def _run_checked(self, argv):
         try:
-            subprocess.run(argv, check=True, capture_output=True)
+            subprocess.run(
+                argv, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
         except subprocess.CalledProcessError as e:
             stderr = e.stderr.decode(errors="replace").strip() if e.stderr else ""
             raise RuntimeError(
@@ -64,26 +57,26 @@ class VolumeController:
         except FileNotFoundError as e:
             raise RuntimeError(f"{argv[0]} not found on PATH") from e
 
-    def mute(self):
-        """Mute system audio. Raises RuntimeError on failure."""
+    def _set_mute(self, muted: bool) -> None:
         if self.system == "darwin":
-            self._run_checked(["osascript", "-e", "set volume with output muted"])
+            flag = "with" if muted else "without"
+            self._run_checked(["osascript", "-e", f"set volume {flag} output muted"])
         elif self.system == "linux":
             if self.linux_cmd == "pactl":
-                self._run_checked(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"])
+                self._run_checked(
+                    ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if muted else "0"]
+                )
             else:  # amixer
-                self._run_checked(["amixer", "-q", "set", "Master", "mute"])
+                self._run_checked(
+                    ["amixer", "-q", "set", "Master", "mute" if muted else "unmute"]
+                )
         elif self.system == "windows":
-            self.volume_control.SetMute(1, None)
+            self.volume_control.SetMute(1 if muted else 0, None)
+
+    def mute(self):
+        """Mute system audio. Raises RuntimeError on failure."""
+        self._set_mute(True)
 
     def unmute(self):
         """Unmute system audio. Raises RuntimeError on failure."""
-        if self.system == "darwin":
-            self._run_checked(["osascript", "-e", "set volume without output muted"])
-        elif self.system == "linux":
-            if self.linux_cmd == "pactl":
-                self._run_checked(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"])
-            else:  # amixer
-                self._run_checked(["amixer", "-q", "set", "Master", "unmute"])
-        elif self.system == "windows":
-            self.volume_control.SetMute(0, None)
+        self._set_mute(False)
