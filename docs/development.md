@@ -22,6 +22,8 @@ screen-monitor/
 |   +-- development.md               # This file
 +-- pyproject.toml                   # Project metadata and dependencies
 +-- uv.lock                          # Lockfile for reproducible installs
++-- flake.nix                        # Nix flake: apps, devShell, pinned toolchain
++-- flake.lock                       # Nix flake input pins
 +-- README.md                        # User-facing: install, run, motivation
 ```
 
@@ -32,7 +34,8 @@ Requires Python >= 3.11.11. Specified in `pyproject.toml`.
 ## Running Tests
 
 ```bash
-python3 -m pytest tests/ -v
+python3 -m pytest tests/ -v   # with system/uv Python
+nix run .#test                # via the flake
 ```
 
 This runs all tests in `tests/test_capture_token_store.py`. There are 10 tests covering:
@@ -119,19 +122,49 @@ Set the root logger level in `main.py` or individual module levels in `src/proce
 
 ## Dependency Management
 
-Dependencies are declared in `pyproject.toml` and locked in `uv.lock` for reproducible builds.
+Dependencies are declared in `pyproject.toml` and locked in `uv.lock` for reproducible builds. The project supports two parallel workflows: `uv` (canonical) and `nix` (via `flake.nix`).
 
-Install with:
+### uv
+
 ```bash
-uv install
+uv sync           # install deps into .venv
+uv run main.py    # run the app
 ```
 
-Run with:
+`uv` resolves against `uv.lock`, so versions are exact and reproducible across machines that share the same lockfile.
+
+### Nix
+
 ```bash
-uv run main.py
+nix run .#start   # run the app
+nix run .#test    # run tests
+nix develop       # drop into a shell with the full toolchain + uv
 ```
 
-No CI is configured yet. Before proposing a PR, ensure tests pass locally.
+The flake builds a Python environment from nixpkgs and wires up `GI_TYPELIB_PATH` + `GST_PLUGIN_PATH` so GStreamer/PipeWire resolve correctly without system packages.
+
+### Parity: uv vs Nix
+
+Both paths run the same source code against the same portal + D-Bus + PipeWire interfaces, but they are **not** bit-identical:
+
+| Aspect | `uv` | `nix` |
+| --- | --- | --- |
+| Lockfile | `uv.lock` (exact pins) | `flake.lock` (nixpkgs snapshot) |
+| Python version | Whatever satisfies `>=3.11.11` | Pinned to `python312` in `flake.nix` |
+| OpenCV | `opencv-python` PyPI wheel (bundles FFmpeg/codecs) | `opencv4` from nixpkgs (built against nixpkgs FFmpeg) |
+| GStreamer | System `/usr/lib/gstreamer-1.0` | Nix-store build of `gst_all_1` |
+| PipeWire plugin | System `pipewiresrc` | `${pkgs.pipewire}/lib/gstreamer-1.0/libgstpipewire.so` |
+| Windows extras (`pycaw`, `comtypes`) | Present in lock, platform-gated | Omitted (Linux-only flake) |
+
+Practical implications:
+
+- **Versions drift.** Package versions under Nix will differ from `uv.lock` because nixpkgs has its own release cadence. If you need bit-for-bit parity with `uv.lock`, migrate the flake to [`uv2nix`](https://github.com/pyproject-nix/uv2nix) — it consumes `uv.lock` directly.
+- **ABI surface.** The app talks to the user's session D-Bus bus and PipeWire socket, both shared across Nix/uv. If the nixpkgs PipeWire build is far from your system PipeWire daemon's version, `pipewiresrc` can theoretically mismatch on the wire protocol. Rare in practice; PipeWire holds its protocol stable.
+- **Codec coverage.** `opencv-python` (pip) and `opencv4` (nix) have different built-in backends. For `cv2.imread` + `cv2.matchTemplate` on a PNG this is irrelevant. It would matter if you later add video decoding.
+
+Treat `uv` as the source of truth for dependency versions. The flake is a convenience for users who want a hermetic run without touching system packages.
+
+No CI is configured yet. Before proposing a PR, ensure tests pass locally under at least one of the two workflows.
 
 ## Known Limitations
 

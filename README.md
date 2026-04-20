@@ -38,8 +38,18 @@ People who hate ads `(-_-)`.
 
 to run this?
 
-- install `uv`
-- `uv run main.py`
+**With Nix:**
+
+```bash
+nix run ".#start"   # run the monitor
+nix run ".#test"    # run tests
+```
+
+**With uv:**
+
+```bash
+uv run main.py
+```
 
 ## Where
 
