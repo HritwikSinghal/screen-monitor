@@ -42,6 +42,11 @@ PERSIST_UNTIL_REVOKED = 2
 PORTAL_CALL_TIMEOUT_SEC = 180  # user may take time to pick a source on first run
 FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND if hasattr(Gst, "SECOND") else 2_000_000_000
 
+# Cap the rate pipewiresrc negotiates with the compositor. The monitor loop
+# consumes frames at ~10 Hz (see process.py); 15 leaves a little headroom
+# without letting the compositor/CPU burn cycles on frames we'll drop.
+CAPTURE_FRAMERATE = 15
+
 
 class TokenStore:
     """Persists the ScreenCast ``restore_token`` to disk.
@@ -341,7 +346,10 @@ class PipeWireCapture:
         self._ensure_gst()
         desc = (
             f"pipewiresrc fd={self.pipewire_fd} path={self.node_id} do-timestamp=true "
-            f"! videoconvert "
+            f"! video/x-raw,max-framerate={CAPTURE_FRAMERATE}/1 "
+            f"! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
+            f"! videorate drop-only=true max-rate={CAPTURE_FRAMERATE} "
+            f"! videoconvert n-threads=2 "
             f"! video/x-raw,format=BGR "
             f"! appsink name=sink max-buffers=1 drop=true sync=false emit-signals=false"
         )
@@ -371,19 +379,23 @@ class PipeWireCapture:
         if not success:
             raise RuntimeError("Failed to map PipeWire buffer")
         try:
-            raw = bytes(mapinfo.data)
+            # np.frombuffer is a zero-copy view over mapinfo.data; the .copy()
+            # below is required because buf.unmap() invalidates that memory.
             expected = width * height * 3
-            if len(raw) == expected:
-                frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+            size = mapinfo.size
+            if size == expected:
+                view = np.frombuffer(
+                    mapinfo.data, dtype=np.uint8, count=expected
+                ).reshape(height, width, 3)
             else:
                 # Row padding: compute stride from total size, then trim.
-                stride = len(raw) // height
-                frame = (
-                    np.frombuffer(raw, dtype=np.uint8)
+                stride = size // height
+                view = (
+                    np.frombuffer(mapinfo.data, dtype=np.uint8, count=stride * height)
                     .reshape(height, stride)[:, : width * 3]
                     .reshape(height, width, 3)
                 )
-            return frame.copy()
+            return view.copy()
         finally:
             buf.unmap(mapinfo)
 
