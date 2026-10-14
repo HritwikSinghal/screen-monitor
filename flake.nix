@@ -39,7 +39,7 @@
           text = ''
             export GI_TYPELIB_PATH="${giTypelibPath}"
             export GST_PLUGIN_PATH="${gstPluginPath}"
-            python main.py
+            python main.py "$@"
           '';
         };
 
@@ -50,7 +50,8 @@
         };
 
       in {
-        apps = {
+        apps = rec {
+          default = start;
           start = {
             type = "app";
             program = "${startApp}/bin/screen-monitor-start";

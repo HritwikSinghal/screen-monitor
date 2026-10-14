@@ -8,6 +8,10 @@
   - [Where](#where)
   - [When](#when)
   - [Before](#before)
+    - [GNOME Wayland, zero-blink capture](#gnome-wayland-zero-blink-capture)
+    - [Hyprland](#hyprland)
+    - [macOS:](#macos)
+  - [Known quirks](#known-quirks)
 
 ## What
 
@@ -15,10 +19,9 @@ is this?
 
 ```python
 while True:
-    # Capture SS of your screen
-    # if a condition is met:
-    #       runs an action
-    # sleep(<time_period>)
+    # Capture a window/screen
+    # if target_image not_found:
+    #       mute_audio
     pass
 ```
 
@@ -41,7 +44,7 @@ to run this?
 **With Nix:**
 
 ```bash
-nix run ".#start"   # run the monitor
+nix run             # run the monitor (same as ".#start"); add flags after --, e.g. nix run . -- -v
 nix run ".#test"    # run tests
 ```
 
@@ -70,9 +73,11 @@ Do you really want me to answer that for you? `(-_-)`.
 
 ## Before
 
+you run this.
+
 Additional platform-specific requirements:
 
-For Linux (GNOME Wayland, zero-blink capture):
+### GNOME Wayland, zero-blink capture
 
 Screen capture uses the `org.freedesktop.portal.ScreenCast` portal + a
 persistent PipeWire stream, so there is no per-frame compositor flash. On
@@ -115,21 +120,34 @@ screencopy {
 ```
 
 Or tick "Allow a restore token" in the picker. Pick the whole monitor, not a
-window: with window capture, xdph stops sending frames for good once that
-window toggles fullscreen. The watermark is found at any window size from about
+window (see [Known quirks](#known-quirks)). The watermark is found at any window size from about
 a quarter-size window up to fullscreen. To pick a different source, run `uv run main.py --select`.
 
 To revoke the cached permission, visit GNOME Settings -> Privacy -> Screen
 Sharing, or simply delete `~/.local/share/screen-monitor/portal.json`.
 
-For macOS:
+### macOS:
 
 ```bash
 brew install python-tk
 ```
 
-For Windows:
+## Known quirks
 
-```bash
-# No additional system dependencies required
-```
+What to expect:
+
+- **Audio mutes whenever the target image (e.g. the channel logo) is missing**,
+  not just during ads. When sharing the whole screen, a menu, popup, or window
+  covering the logo also mutes. When sharing one window, things on top of it
+  are ignored; only changes inside that window count.
+- **Hyprland: share the whole monitor, not a window.** If a shared window is
+  resized or made fullscreen, the picture freezes for good. Fix:
+  `uv run main.py --select` and pick the monitor.
+- **"No new frames for 30s" warning.** Hyprland only sends a new picture when
+  something on screen changes. If a `Frames resumed` line follows, the screen
+  was just still (e.g. a paused video) and all is fine. If it never comes, the
+  picture is frozen: restart the app.
+- **The app quits by itself if the shared window closes.** It turns the
+  sound back on before exiting.
+
+Debug tips: [docs/troubleshooting.md](docs/troubleshooting.md#debugging).
