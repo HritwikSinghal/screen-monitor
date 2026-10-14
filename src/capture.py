@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import secrets
+import time
 
 import dbus
 import gi
@@ -40,8 +41,20 @@ PERSIST_UNTIL_REVOKED = 2
 
 PORTAL_CALL_TIMEOUT_SEC = 180  # user may take time to pick a source on first run
 FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND
-# Consecutive pull timeouts (static screen) before warning about a possible stall.
-STALL_WARN_TIMEOUTS = 15
+# Seconds without a fresh frame before warning about a possible stall. Repeat
+# warnings back off by doubling, so a long stall stays visible without spam.
+STALL_WARN_SEC = 30
+# Interval of the DEBUG-level throughput line (frames, fps, pull timeouts).
+STATS_LOG_INTERVAL_SEC = 60
+
+# Bus messages drained on every pull. Nothing else reads the bus (no GLib main
+# loop runs while polling), so without this pipeline errors are silently lost.
+_BUS_MASK = (
+    Gst.MessageType.ERROR
+    | Gst.MessageType.WARNING
+    | Gst.MessageType.EOS
+    | Gst.MessageType.STATE_CHANGED
+)
 
 # Cap the rate pipewiresrc negotiates with the compositor. This also sets the
 # effective detection latency: a state change can only be seen once the next
@@ -340,18 +353,38 @@ class ScreenCastSession:
                 self.pipewire_fd = None
 
 
+class CaptureStreamError(RuntimeError):
+    """The PipeWire stream failed for good (pipeline ERROR or EOS).
+
+    Distinct from a pull timeout: retrying cannot recover, the session has to
+    be reopened.
+    """
+
+
 class PipeWireCapture:
     """GStreamer pipeline that consumes the portal's PipeWire node as BGR frames."""
 
     _gst_initialized = False
 
-    def __init__(self, pipewire_fd: int, node_id: int):
+    def __init__(self, pipewire_fd: int, node_id: int, clock=time.monotonic):
         self.pipewire_fd = pipewire_fd
         self.node_id = node_id
         self.pipeline: Gst.Pipeline | None = None
         self.appsink = None
+        self._bus = None
+        self._clock = clock
         self._last_frame: np.ndarray | None = None
-        self._consecutive_timeouts = 0
+        self._fatal: str | None = None
+        self._frame_key: tuple | None = None
+        # Stall tracking, in clock() seconds.
+        self._last_fresh_at: float | None = None
+        self._next_stall_warn = STALL_WARN_SEC
+        self._stall_warned = False
+        # Throughput counters since the last stats line.
+        self._frames_total = 0
+        self._stats_frames = 0
+        self._stats_timeouts = 0
+        self._stats_since = clock()
 
     @classmethod
     def _ensure_gst(cls) -> None:
@@ -367,7 +400,7 @@ class PipeWireCapture:
         # (25.6% -> 13.2%). No queue in front of videoconvert: each one pins a
         # compositor buffer, and xdph's pool is small.
         desc = (
-            f"pipewiresrc fd={self.pipewire_fd} path={self.node_id} do-timestamp=true "
+            f"pipewiresrc name=src fd={self.pipewire_fd} path={self.node_id} do-timestamp=true "
             f"min-buffers={PIPEWIRE_MIN_BUFFERS} "
             f"! video/x-raw,max-framerate={CAPTURE_FRAMERATE}/1 "
             f"! videorate drop-only=true max-rate={CAPTURE_FRAMERATE} "
@@ -383,33 +416,162 @@ class PipeWireCapture:
                 "and 'gst-plugins-good' are installed. Original error: %s" % e
             ) from e
         self.appsink = self.pipeline.get_by_name("sink")
+        self._bus = self.pipeline.get_bus()
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
+            self._drain_bus_quietly()
             raise RuntimeError("GStreamer pipeline refused to enter PLAYING")
+        self._stats_since = self._clock()
+
+    def _drain_bus(self) -> None:
+        """Log pending pipeline messages; raise CaptureStreamError on ERROR/EOS."""
+        while True:
+            msg = self._bus.pop_filtered(_BUS_MASK)
+            if msg is None:
+                return
+            src = msg.src.get_name() if msg.src is not None else "?"
+            if msg.type == Gst.MessageType.ERROR:
+                err, dbg = msg.parse_error()
+                self._fatal = f"GStreamer error from {src}: {err.message}"
+                logger.error("%s\n  debug: %s\n  %s", self._fatal, dbg, self.diagnostics())
+                raise CaptureStreamError(self._fatal)
+            if msg.type == Gst.MessageType.EOS:
+                self._fatal = "PipeWire stream ended (EOS; source window closed or portal revoked?)"
+                logger.error("%s\n  %s", self._fatal, self.diagnostics())
+                raise CaptureStreamError(self._fatal)
+            if msg.type == Gst.MessageType.WARNING:
+                err, dbg = msg.parse_warning()
+                logger.warning("GStreamer warning from %s: %s (%s)", src, err.message, dbg)
+            elif msg.type == Gst.MessageType.STATE_CHANGED:
+                old, new, _ = msg.parse_state_changed()
+                # Leaving PLAYING after start-up is never requested by us, so
+                # it is the first visible sign of a stream going away.
+                level = (
+                    logging.WARNING
+                    if msg.src is self.pipeline and old == Gst.State.PLAYING
+                    else logging.DEBUG
+                )
+                logger.log(
+                    level, "%s state %s -> %s", src,
+                    old.value_nick.upper(), new.value_nick.upper(),
+                )
+
+    def _drain_bus_quietly(self) -> None:
+        try:
+            self._drain_bus()
+        except CaptureStreamError:
+            pass  # already logged; the caller raises its own error
+
+    def diagnostics(self) -> str:
+        """One-line snapshot of pipeline health, for stall and error reports."""
+        parts = []
+        if self.pipeline is None:
+            parts.append("pipeline=not started")
+        else:
+            for name, element in (
+                ("pipeline", self.pipeline),
+                ("src", self.pipeline.get_by_name("src")),
+            ):
+                if element is not None:
+                    _, state, pending = element.get_state(0)
+                    parts.append(
+                        f"{name}={state.value_nick.upper()}"
+                        + (f"(pending {pending.value_nick.upper()})"
+                           if pending != Gst.State.VOID_PENDING else "")
+                    )
+            parts.append(f"src_caps={self._source_caps()}")
+        parts.append(f"node={self.node_id}")
+        parts.append(f"frames={self._frames_total}")
+        if self._last_fresh_at is not None:
+            parts.append(f"last_frame_age={self._clock() - self._last_fresh_at:.1f}s")
+        return " ".join(parts)
+
+    def _source_caps(self) -> str:
+        src = self.pipeline.get_by_name("src") if self.pipeline else None
+        pad = src.get_static_pad("src") if src else None
+        caps = pad.get_current_caps() if pad else None
+        return caps.to_string() if caps else "none"
+
+    def _on_timeout(self) -> None:
+        now = self._clock()
+        self._stats_timeouts += 1
+        self._maybe_log_stats(now)
+        stalled_for = now - self._last_fresh_at
+        if stalled_for >= self._next_stall_warn:
+            # Damage-driven compositors (Hyprland/xdph) send nothing while the
+            # source is static, so this is only a bug if the content was moving.
+            logger.warning(
+                "No new frames for %ds; reusing the last one. Fine if the source "
+                "is static, otherwise the stream has stalled. %s",
+                int(stalled_for), self.diagnostics(),
+            )
+            self._stall_warned = True
+            self._next_stall_warn *= 2
+
+    def _on_fresh_frame(self, width: int, height: int, fmt: str | None) -> None:
+        now = self._clock()
+        if self._last_fresh_at is not None:
+            gap = now - self._last_fresh_at
+            if self._stall_warned:
+                # Tells a static source (resumes on change) from a dead stream
+                # (never logs this) after the fact.
+                logger.info("Frames resumed after %.1fs without new frames", gap)
+        self._last_fresh_at = now
+        self._next_stall_warn = STALL_WARN_SEC
+        self._stall_warned = False
+        self._frames_total += 1
+        self._stats_frames += 1
+        key = (width, height, fmt)
+        if key != self._frame_key:
+            # A size change mid-stream is the trigger for the known xdph
+            # renegotiation wedge with window sources (claude/tasks.md).
+            if self._frame_key is None:
+                previous = "start"
+            else:
+                pw, ph, pfmt = self._frame_key
+                previous = f"{pw}x{ph} {pfmt}"
+            logger.info(
+                "Stream frame format %s -> %dx%d %s (src caps: %s)",
+                previous, width, height, fmt, self._source_caps(),
+            )
+            self._frame_key = key
+        self._maybe_log_stats(now)
+
+    def _maybe_log_stats(self, now: float) -> None:
+        elapsed = now - self._stats_since
+        if elapsed < STATS_LOG_INTERVAL_SEC:
+            return
+        logger.debug(
+            "Capture stats: %d frames in %.0fs (%.1f fps), %d pull timeouts",
+            self._stats_frames, elapsed, self._stats_frames / elapsed, self._stats_timeouts,
+        )
+        self._stats_frames = 0
+        self._stats_timeouts = 0
+        self._stats_since = now
 
     def get_frame(self) -> np.ndarray:
         if self.appsink is None:
             raise RuntimeError("PipeWireCapture.start() was not called")
+        if self._fatal is not None:
+            raise CaptureStreamError(self._fatal)
+        self._drain_bus()
         sample = self.appsink.try_pull_sample(FRAME_PULL_TIMEOUT_NS)
         if sample is None:
+            # The pull may have ended because of an error posted meanwhile.
+            self._drain_bus()
             if self.appsink.props.eos:
-                raise RuntimeError("PipeWire stream ended (source closed?)")
+                self._fatal = "PipeWire stream ended (source closed?)"
+                raise CaptureStreamError(self._fatal)
             if self._last_frame is None:
-                raise RuntimeError("No frame available from PipeWire stream (timeout)")
-            # Damage-driven compositors (Hyprland/xdph) send nothing while the
-            # source is static, so a timeout usually means "unchanged".
-            self._consecutive_timeouts += 1
-            if self._consecutive_timeouts == STALL_WARN_TIMEOUTS:
-                logger.warning(
-                    "No new frames for %ds; reusing the last one. Fine if the "
-                    "source is static, otherwise the stream may have stalled.",
-                    STALL_WARN_TIMEOUTS * FRAME_PULL_TIMEOUT_NS // Gst.SECOND,
+                raise RuntimeError(
+                    "No frame available from PipeWire stream (timeout). " + self.diagnostics()
                 )
+            self._on_timeout()
             return self._last_frame
-        self._consecutive_timeouts = 0
         caps = sample.get_caps().get_structure(0)
         width = caps.get_value("width")
         height = caps.get_value("height")
+        self._on_fresh_frame(width, height, caps.get_value("format"))
         buf = sample.get_buffer()
         success, mapinfo = buf.map(Gst.MapFlags.READ)
         if not success:
@@ -441,6 +603,7 @@ class PipeWireCapture:
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.appsink = None
+            self._bus = None
 
 
 class Capture:

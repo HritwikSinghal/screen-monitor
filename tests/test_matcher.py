@@ -130,3 +130,12 @@ def test_moved_target_found_again_after_throttled_resweep():
     assert not matcher.match(moved)  # tracked position is empty; throttled
     clock.now = 1.5
     assert matcher.match(moved)
+
+
+def test_last_score_reports_match_quality():
+    tpl = make_template()
+    matcher = TemplateMatcher(tpl)
+    assert matcher.match(make_screen(1912, tpl))
+    assert matcher.last_score >= matcher.threshold
+    assert not matcher.match(make_screen(1912, None))
+    assert matcher.last_score is not None and matcher.last_score < matcher.threshold

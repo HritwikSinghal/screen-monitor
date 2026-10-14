@@ -25,13 +25,19 @@ Either way, the tool will re-establish consent with a fresh picker. This is the 
 
 ## Debugging
 
-Enable debug logging by setting the log level in `main.py` (line 12):
-
-```python
-logger.setLevel(logging.DEBUG)
+```bash
+uv run main.py -v                          # DEBUG: pipeline state changes, fps/timeouts every 60s
+GST_DEBUG=pipewiresrc:5 uv run main.py -v  # plus GStreamer's own pipewiresrc trace on stderr
+kill -USR1 <pid>                           # dump every thread's Python stack (find a hang)
 ```
 
-Or export `PYTHONUNBUFFERED=1` and check stderr for detailed GStreamer and D-Bus messages.
+Reading a "No new frames for Ns" warning: it carries pipeline/src state, the
+negotiated `src_caps`, the frame count and the last frame's age. If the source
+was only static, a later `Frames resumed after Ns` line follows; if it never
+does, the stream is wedged. A `Stream frame format AxB -> CxD` line just
+before the stall points at the xdph resize bug (pick the monitor, not a window).
+A GStreamer ERROR or EOS is now logged with diagnostics and stops the monitor,
+unmuting audio, instead of reusing the last frame forever.
 
 For D-Bus diagnostic info, use:
 ```bash

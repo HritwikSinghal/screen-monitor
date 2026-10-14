@@ -5,23 +5,63 @@ import time
 import cv2
 import numpy as np
 
-from src.capture import Capture, TokenStore
+from src.capture import Capture, CaptureStreamError, TokenStore
 from src.matcher import TemplateMatcher
 from src.volume import VolumeController
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 POLL_INTERVAL_SEC = 0.05
+# While capture keeps failing, poll slower and log a summary at most this
+# often instead of a traceback every tick.
+CAPTURE_FAILURE_BACKOFF_SEC = 1.0
+CAPTURE_FAILURE_LOG_INTERVAL_SEC = 60.0
 
 
-def capture_screen(client: Capture) -> np.ndarray | None:
-    """Pull the latest frame from the persistent PipeWire stream (BGR, HxWx3)."""
+class _CaptureFailures:
+    """Logs the first capture failure in full, then rate-limited summaries."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self.count = 0
+        self._last_log = 0.0
+
+    def failed(self) -> None:
+        self.count += 1
+        now = self._clock()
+        if self.count == 1:
+            logger.exception("Frame capture failed")
+            self._last_log = now
+        elif now - self._last_log >= CAPTURE_FAILURE_LOG_INTERVAL_SEC:
+            logger.error("Frame capture still failing (%d consecutive failures)", self.count)
+            self._last_log = now
+
+    def succeeded(self) -> None:
+        if self.count:
+            logger.info("Frame capture recovered after %d failures", self.count)
+            self.count = 0
+
+
+def capture_screen(client: Capture, failures: _CaptureFailures) -> np.ndarray | None:
+    """Pull the latest frame from the persistent PipeWire stream (BGR, HxWx3).
+
+    Returns None on a transient failure. CaptureStreamError propagates: the
+    stream is gone and polling it again only repeats the error.
+    """
     try:
-        return client.get_frame()
+        frame = client.get_frame()
+    except CaptureStreamError:
+        raise
     except Exception:
-        logger.exception("Frame capture failed")
+        failures.failed()
         return None
+    failures.succeeded()
+    return frame
+
+
+def _score(matcher: TemplateMatcher) -> str:
+    s = matcher.last_score
+    return "n/a" if s is None else f"{s:.2f}"
 
 
 def load_target_image(image_path):
@@ -59,12 +99,13 @@ def start(reselect: bool = False):
         token_store.clear()
         logger.info("Cleared remembered capture source; the picker will be shown")
 
+    failures = _CaptureFailures()
     with Capture(token_store) as client:
         try:
             while True:
-                screen = capture_screen(client)
+                screen = capture_screen(client, failures)
                 if screen is None:
-                    time.sleep(POLL_INTERVAL_SEC)
+                    time.sleep(CAPTURE_FAILURE_BACKOFF_SEC)
                     continue
 
                 image_present = matcher.match(screen)
@@ -76,7 +117,10 @@ def start(reselect: bool = False):
                         logger.exception("Mute failed; leaving was_muted=False to retry")
                     else:
                         was_muted = True
-                        logger.info("Target image not found - Audio muted")
+                        logger.info(
+                            "Target image not found (score %s < %.2f) - Audio muted",
+                            _score(matcher), matcher.threshold,
+                        )
                 elif image_present and was_muted:
                     try:
                         volume_control.unmute()
@@ -84,12 +128,19 @@ def start(reselect: bool = False):
                         logger.exception("Unmute failed; will retry next tick")
                     else:
                         was_muted = False
-                        logger.info("Target image found - Audio unmuted")
+                        logger.info(
+                            "Target image found (score %s, scale %s) - Audio unmuted",
+                            _score(matcher), matcher.cached_scale,
+                        )
 
                 time.sleep(POLL_INTERVAL_SEC)
 
         except KeyboardInterrupt:
             logger.info("Monitoring stopped by user")
+        except CaptureStreamError as e:
+            # Already logged with diagnostics where it was detected; exiting
+            # unmutes below instead of freezing the mute state on a dead stream.
+            logger.error("Capture stream is gone, stopping: %s", e)
         except Exception:
             logger.exception("Monitor loop crashed")
         finally:

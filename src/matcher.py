@@ -131,6 +131,10 @@ class TemplateMatcher:
         self._hit: tuple[int, int, int] | None = None
         self._frame_shape: tuple[int, ...] | None = None
         self._last_sweep = float("-inf")
+        # Best confirmed score from the last match() that actually scored
+        # (None when it was throttled or the frame was unusable); logged on
+        # mute transitions so a threshold that is too tight is visible.
+        self.last_score: float | None = None
 
     @property
     def cached_scale(self) -> float | None:
@@ -157,7 +161,7 @@ class TemplateMatcher:
         roi = pyr.bgr(sc.level)[max(0, y - m) : y + th + m, max(0, x - m) : x + tw + m]
         return float(cv2.matchTemplate(roi, sc.bgr, cv2.TM_CCOEFF_NORMED).max()), x, y
 
-    def _sweep(self, pyr: _Pyramid) -> tuple[int, int, int] | None:
+    def _sweep(self, pyr: _Pyramid) -> tuple[tuple[int, int, int] | None, float]:
         candidates = []
         for idx, sc in enumerate(self._scales):
             gray = pyr.gray(sc.coarse_level)
@@ -176,10 +180,11 @@ class TemplateMatcher:
             score, x, y = self._score_near(pyr, idx, x, y, margin=4)
             if score > best_score:
                 best, best_score = (idx, x, y), score
-        return best if best_score >= self.threshold else None
+        return (best if best_score >= self.threshold else None), best_score
 
     def match(self, screen: np.ndarray | None) -> bool:
         """True if the template is visible in ``screen`` (BGR) at any scale."""
+        self.last_score = None
         if screen is None or screen.ndim != 3 or screen.shape[2] != 3 or screen.size == 0:
             return False
         resized = screen.shape != self._frame_shape
@@ -189,6 +194,7 @@ class TemplateMatcher:
             if self._hit is not None:
                 idx, x, y = self._hit
                 score, x, y = self._score_near(pyr, idx, x, y, margin=8)
+                self.last_score = score
                 if score >= self.threshold:
                     self._hit = (idx, x, y)
                     return True
@@ -196,7 +202,9 @@ class TemplateMatcher:
                 return False
 
         self._last_sweep = self._clock()
-        hit = self._sweep(pyr)
+        hit, score = self._sweep(pyr)
+        if self.last_score is None or score > self.last_score:
+            self.last_score = score
         if hit is None:
             # Keep the old hit: once the ad ends the target usually returns
             # where, and at the size, it was before.
