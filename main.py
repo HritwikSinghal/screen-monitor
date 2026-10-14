@@ -2,6 +2,7 @@
 
 # Press ⌃R to execute it or replace it with your code.
 # Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+import argparse
 import logging
 
 from src.process import start
@@ -12,4 +13,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 if __name__ == "__main__":
-    start()
+    parser = argparse.ArgumentParser(description="Mute audio while a target image is off screen.")
+    parser.add_argument(
+        "--select",
+        action="store_true",
+        help="forget the remembered window/monitor and show the source picker again",
+    )
+    args = parser.parse_args()
+    start(reselect=args.select)

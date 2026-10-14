@@ -23,14 +23,22 @@ This eliminates the blink because frame delivery is decoupled from the applicati
 
 ## GStreamer Pipeline
 
-The pipeline is constructed at `src/capture.py:298-301`:
+The pipeline is constructed in `PipeWireCapture.start()` (`src/capture.py`):
 
 ```
-pipewiresrc fd={pipewire_fd} path={node_id} do-timestamp=true ! videoconvert ! video/x-raw,format=BGR ! appsink name=sink max-buffers=1 drop=true sync=false emit-signals=false
+pipewiresrc fd={pipewire_fd} path={node_id} do-timestamp=true min-buffers=4 ! video/x-raw,max-framerate=10/1 ! videorate drop-only=true max-rate=10 ! videoconvert n-threads=0 ! video/x-raw,format=BGR ! appsink name=sink max-buffers=1 drop=true sync=false emit-signals=false
 ```
+
+xdg-desktop-portal-hyprland ignores `max-framerate` (about 19 fps measured), so
+`videorate` drops the excess before `videoconvert`; that halves capture CPU on
+a 4K monitor (25.6% to 13.2%).
+
+On Hyprland, frames only arrive when the source changes. A pull timeout with a
+live stream returns the previous frame; 30 s of that logs a stall warning.
 
 **pipewiresrc**: reads raw frames from the PipeWire fd and node_id  
 **do-timestamp=true**: adds GStreamer timestamps for synchronization  
+**max-framerate=10/1** + **videorate**: rate limit; GNOME honours the caps, xdph does not  
 **videoconvert**: converts to the target color space  
 **video/x-raw,format=BGR**: requests BGR (OpenCV native) output  
 **appsink**: exposes frames to Python; `max-buffers=1 drop=true` ensures we always grab the latest frame, discarding any backlog

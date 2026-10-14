@@ -14,7 +14,7 @@ The main event loop. Owned by `start()` at line 36:
 - Line 54: `with Capture() as client:` — opens a persistent ScreenCast session
 - Line 56: Enters a `while True` loop
 - Line 57: Calls `capture_screen(client)` -> `Capture.get_frame()` (line 18)
-- Line 62: Checks if the target image is present in the captured frame via `check_image_presence()` (line 31-33)
+- Checks for the target via `TemplateMatcher.match()` (`src/matcher.py`): grayscale NCC across several template scales finds a candidate, colour NCC around it confirms, so a resized or fullscreened window still matches and look-alike shapes in ads do not
 - Lines 65, 69: Calls `VolumeController.mute()` and `.unmute()` based on the image presence
 
 **Mute logic clarification**: The tool mutes audio when the target image is ABSENT (`not image_present` at line 64) and unmutes when the target image is FOUND (`image_present` at line 68). This matches the streaming use case: mute during ads (when the watermark disappears), unmute when live content resumes (watermark reappears).
@@ -83,7 +83,7 @@ main.py
             |
             |_ loop:
                  screen = Capture.get_frame()   -> numpy BGR array
-                 check_image_presence(screen, target_img)
+                 TemplateMatcher.match(gray screen)   # multi-scale, src/matcher.py
                  VolumeController.mute() / .unmute()
 ```
 

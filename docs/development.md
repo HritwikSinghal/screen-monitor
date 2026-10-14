@@ -90,10 +90,10 @@ target_img = load_target_image("target_image.png")
 **Contract:**
 - File path is hardcoded as `target_image.png` (relative to the current working directory)
 - Must be a valid image readable by OpenCV (`cv2.imread()`)
-- Color space: BGR (OpenCV native)
-- Used with `cv2.matchTemplate(screen, target_img, cv2.TM_CCOEFF_NORMED)` at line 32
+- Loaded as BGR; grayscale NCC finds candidates, colour NCC on the candidate region confirms them
+- Matched by `TemplateMatcher` (`src/matcher.py`): frames are downscaled to `WORK_WIDTH` (960px), then `cv2.matchTemplate(..., cv2.TM_CCOEFF_NORMED)` runs per template scale in `DEFAULT_SCALES`
 - Matched at threshold >= 0.8 (normalized cross-correlation coefficient)
-- Must be smaller than the screen resolution (matchTemplate requires template <= image)
+- Crop it from a frame of the window you will capture; it is found at other window sizes as long as the rendered size falls inside `DEFAULT_SCALES`
 
 The threshold of 0.8 is a reasonable default for identifying watermarks and UI elements. Adjust if false positives or false negatives occur.
 

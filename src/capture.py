@@ -40,11 +40,17 @@ PERSIST_UNTIL_REVOKED = 2
 
 PORTAL_CALL_TIMEOUT_SEC = 180  # user may take time to pick a source on first run
 FRAME_PULL_TIMEOUT_NS = 2 * Gst.SECOND
+# Consecutive pull timeouts (static screen) before warning about a possible stall.
+STALL_WARN_TIMEOUTS = 15
 
 # Cap the rate pipewiresrc negotiates with the compositor. This also sets the
 # effective detection latency: a state change can only be seen once the next
 # frame arrives. 10 fps = ~100 ms worst case, which matches the poll loop.
 CAPTURE_FRAMERATE = 10
+
+# Ask the portal for a few spare buffers so one frame in conversion never
+# starves the compositor side of the stream.
+PIPEWIRE_MIN_BUFFERS = 4
 
 
 class TokenStore:
@@ -217,6 +223,16 @@ class ScreenCastSession:
         streams, new_token = self._start()
         if new_token:
             self._token_store.save(new_token)
+        else:
+            # xdg-desktop-portal-hyprland only returns a token when the picker's
+            # "Allow a restore token" box is ticked or xdph.conf sets
+            # screencopy:allow_token_by_default; without one the picker
+            # reappears on every launch and nothing else explains why.
+            logger.warning(
+                "Portal returned no restore_token; the source picker will be shown "
+                "again next run. On Hyprland set "
+                "'screencopy { allow_token_by_default = true }' in ~/.config/hypr/xdph.conf."
+            )
         self.node_id = int(streams[0][0])
         self.pipewire_fd = self._open_pipewire_remote()
 
@@ -334,6 +350,8 @@ class PipeWireCapture:
         self.node_id = node_id
         self.pipeline: Gst.Pipeline | None = None
         self.appsink = None
+        self._last_frame: np.ndarray | None = None
+        self._consecutive_timeouts = 0
 
     @classmethod
     def _ensure_gst(cls) -> None:
@@ -343,10 +361,15 @@ class PipeWireCapture:
 
     def start(self) -> None:
         self._ensure_gst()
+        # xdg-desktop-portal-hyprland ignores max-framerate and sends every
+        # damaged frame (~19 fps measured), so videorate must drop the excess
+        # *before* videoconvert: converting every 4K frame doubled capture CPU
+        # (25.6% -> 13.2%). No queue in front of videoconvert: each one pins a
+        # compositor buffer, and xdph's pool is small.
         desc = (
             f"pipewiresrc fd={self.pipewire_fd} path={self.node_id} do-timestamp=true "
+            f"min-buffers={PIPEWIRE_MIN_BUFFERS} "
             f"! video/x-raw,max-framerate={CAPTURE_FRAMERATE}/1 "
-            f"! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 "
             f"! videorate drop-only=true max-rate={CAPTURE_FRAMERATE} "
             f"! videoconvert n-threads=0 "
             f"! video/x-raw,format=BGR "
@@ -369,7 +392,21 @@ class PipeWireCapture:
             raise RuntimeError("PipeWireCapture.start() was not called")
         sample = self.appsink.try_pull_sample(FRAME_PULL_TIMEOUT_NS)
         if sample is None:
-            raise RuntimeError("No frame available from PipeWire stream (timeout)")
+            if self.appsink.props.eos:
+                raise RuntimeError("PipeWire stream ended (source closed?)")
+            if self._last_frame is None:
+                raise RuntimeError("No frame available from PipeWire stream (timeout)")
+            # Damage-driven compositors (Hyprland/xdph) send nothing while the
+            # source is static, so a timeout usually means "unchanged".
+            self._consecutive_timeouts += 1
+            if self._consecutive_timeouts == STALL_WARN_TIMEOUTS:
+                logger.warning(
+                    "No new frames for %ds; reusing the last one. Fine if the "
+                    "source is static, otherwise the stream may have stalled.",
+                    STALL_WARN_TIMEOUTS * FRAME_PULL_TIMEOUT_NS // Gst.SECOND,
+                )
+            return self._last_frame
+        self._consecutive_timeouts = 0
         caps = sample.get_caps().get_structure(0)
         width = caps.get_value("width")
         height = caps.get_value("height")
@@ -394,7 +431,8 @@ class PipeWireCapture:
                     .reshape(height, stride)[:, : width * 3]
                     .reshape(height, width, 3)
                 )
-            return view.copy()
+            self._last_frame = view.copy()
+            return self._last_frame
         finally:
             buf.unmap(mapinfo)
 
